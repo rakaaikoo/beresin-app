@@ -14,6 +14,11 @@ import {
   PartyPopper,
   Sparkles,
   WifiOff,
+  LogIn,
+  LogOut,
+  User,
+  Lock,
+  Mail,
 } from "lucide-react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:3001/api";
@@ -82,6 +87,22 @@ function fmtDue(iso) {
 }
 
 export default function App() {
+  const [token, setToken] = useState(() => localStorage.getItem("beresin_token") || null);
+  const [user, setUser] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("beresin_user")) || null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [authMode, setAuthMode] = useState("login");
+  const [authName, setAuthName] = useState("");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+
   const [tasks, setTasks] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [offline, setOffline] = useState(false);
@@ -91,6 +112,14 @@ export default function App() {
   const [nagIndex, setNagIndex] = useState(0);
   const [pushStatus, setPushStatus] = useState("default");
   const [swRegistration, setSwRegistration] = useState(null);
+
+  const handleLogout = useCallback(() => {
+    localStorage.removeItem("beresin_token");
+    localStorage.removeItem("beresin_user");
+    setToken(null);
+    setUser(null);
+    setTasks([]);
+  }, []);
 
   useEffect(() => {
     if ("serviceWorker" in navigator && "PushManager" in window) {
@@ -120,6 +149,7 @@ export default function App() {
   }
 
   async function enablePushNotifications() {
+    if (!token) return;
     if (!("Notification" in window) || !("serviceWorker" in navigator)) {
       alert("Browser Anda belum mendukung Notifikasi Push.");
       return;
@@ -129,7 +159,7 @@ export default function App() {
       const perm = await Notification.requestPermission();
       if (perm !== "granted") {
         setPushStatus("denied");
-        alert("Izin notifikasi ditolak. Silakan izinkan notifikasi di setelan browser HP Anda.");
+        alert("Izin notifikasi ditolak. Silakan izinkan notifikasi di setelan browser.");
         return;
       }
 
@@ -142,13 +172,24 @@ export default function App() {
         applicationServerKey: urlBase64ToUint8Array(publicKey),
       });
 
-      await fetch(`${API_BASE}/subscribe`, {
+      const resSub = await fetch(`${API_BASE}/subscribe`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify(sub),
       });
 
-      await fetch(`${API_BASE}/subscribe/test`, { method: "POST" });
+      if (resSub.status === 401) {
+        handleLogout();
+        return;
+      }
+
+      await fetch(`${API_BASE}/subscribe/test`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
       setPushStatus("granted");
     } catch (e) {
       console.error("Gagal mengaktifkan push:", e);
@@ -158,8 +199,15 @@ export default function App() {
   }
 
   const fetchTasks = useCallback(async () => {
+    if (!token) return;
     try {
-      const res = await fetch(`${API_BASE}/tasks`);
+      const res = await fetch(`${API_BASE}/tasks`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        handleLogout();
+        return;
+      }
       if (!res.ok) throw new Error("gagal ambil data");
       const data = await res.json();
       setTasks(data);
@@ -169,31 +217,76 @@ export default function App() {
     } finally {
       setLoaded(true);
     }
-  }, []);
+  }, [token, handleLogout]);
 
   useEffect(() => {
-    fetchTasks();
-    const poll = setInterval(fetchTasks, 15000);
-    const nagTimer = setInterval(() => setNagIndex((i) => i + 1), 5000);
-    return () => {
-      clearInterval(poll);
-      clearInterval(nagTimer);
-    };
-  }, [fetchTasks]);
+    if (token) {
+      fetchTasks();
+      const poll = setInterval(fetchTasks, 15000);
+      const nagTimer = setInterval(() => setNagIndex((i) => i + 1), 5000);
+      return () => {
+        clearInterval(poll);
+        clearInterval(nagTimer);
+      };
+    }
+  }, [token, fetchTasks]);
+
+  // Auth Handler
+  async function handleAuthSubmit(e) {
+    e.preventDefault();
+    setAuthError("");
+    setAuthLoading(true);
+
+    const isRegister = authMode === "register";
+    const endpoint = isRegister ? "/auth/register" : "/auth/login";
+    const body = isRegister
+      ? { name: authName, email: authEmail, password: authPassword }
+      : { email: authEmail, password: authPassword };
+
+    try {
+      const res = await fetch(`${API_BASE}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Gagal autentikasi");
+      }
+      // Success
+      localStorage.setItem("beresin_token", data.token);
+      localStorage.setItem("beresin_user", JSON.stringify(data.user));
+      setToken(data.token);
+      setUser(data.user);
+      setAuthPassword("");
+      setAuthError("");
+    } catch (err) {
+      setAuthError(err.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
 
   async function addTask() {
     const text = title.trim();
-    if (!text) return;
+    if (!text || !token) return;
     try {
       const res = await fetch(`${API_BASE}/tasks`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           title: text,
           priority,
           due: due ? new Date(due).toISOString() : null,
         }),
       });
+      if (res.status === 401) {
+        handleLogout();
+        return;
+      }
       if (!res.ok) throw new Error("gagal nambah tugas");
       const newTask = await res.json();
       setTasks((prev) => [...prev, newTask]);
@@ -206,15 +299,23 @@ export default function App() {
   }
 
   async function toggleDone(id) {
+    if (!token) return;
     const target = tasks.find((t) => t.id === id);
     if (!target) return;
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
     try {
       const res = await fetch(`${API_BASE}/tasks/${id}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ done: !target.done }),
       });
+      if (res.status === 401) {
+        handleLogout();
+        return;
+      }
       if (!res.ok) throw new Error("gagal update tugas");
       setOffline(false);
     } catch (e) {
@@ -224,16 +325,160 @@ export default function App() {
   }
 
   async function deleteTask(id) {
+    if (!token) return;
     const prevTasks = tasks;
     setTasks((prev) => prev.filter((t) => t.id !== id));
     try {
-      const res = await fetch(`${API_BASE}/tasks/${id}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/tasks/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        handleLogout();
+        return;
+      }
       if (!res.ok && res.status !== 204) throw new Error("gagal hapus tugas");
       setOffline(false);
     } catch (e) {
       setOffline(true);
       setTasks(prevTasks);
     }
+  }
+
+  // Render Login / Register Modal if not logged in
+  if (!token || !user) {
+    return (
+      <div className="min-h-screen w-full bg-gradient-to-br from-purple-950 via-violet-950 to-indigo-950 text-orange-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-purple-900/40 border border-white/10 backdrop-blur-md rounded-3xl p-6 sm:p-8 shadow-2xl shadow-black/50">
+          <div className="flex flex-col items-center text-center mb-6">
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-rose-500 to-sky-400 flex items-center justify-center shadow-lg shadow-black/30 mb-3">
+              <Smile className="w-8 h-8 text-purple-950" strokeWidth={2.5} />
+            </div>
+            <h1 className="text-3xl font-black tracking-tight">BERESIN.</h1>
+            <p className="text-xs text-violet-300 mt-1">
+              Masuk atau daftar untuk menyimpan & mengelola tugas kamu
+            </p>
+          </div>
+
+          {/* Tab Switcher */}
+          <div className="flex bg-purple-950/60 p-1 rounded-2xl border border-white/10 mb-6">
+            <button
+              onClick={() => {
+                setAuthMode("login");
+                setAuthError("");
+              }}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+                authMode === "login"
+                  ? "bg-gradient-to-r from-rose-500 to-purple-600 text-white shadow-md"
+                  : "text-violet-400 hover:text-white"
+              }`}
+            >
+              <LogIn className="w-3.5 h-3.5 inline mr-1.5" />
+              MASUK
+            </button>
+            <button
+              onClick={() => {
+                setAuthMode("register");
+                setAuthError("");
+              }}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+                authMode === "register"
+                  ? "bg-gradient-to-r from-rose-500 to-purple-600 text-white shadow-md"
+                  : "text-violet-400 hover:text-white"
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5 inline mr-1.5" />
+              DAFTAR
+            </button>
+          </div>
+
+          {/* Error Banner */}
+          {authError && (
+            <div className="bg-rose-950/80 border border-rose-500/50 text-rose-300 text-xs rounded-xl p-3 mb-4 flex items-center gap-2">
+              <X className="w-4 h-4 shrink-0 text-rose-400" />
+              <span>{authError}</span>
+            </div>
+          )}
+
+          {/* Form */}
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            {authMode === "register" && (
+              <div>
+                <label className="block text-xs font-semibold text-violet-300 mb-1.5">
+                  Nama Lengkap / Panggilan
+                </label>
+                <div className="flex items-center bg-purple-950/50 border border-white/10 rounded-xl px-3 py-2.5">
+                  <User className="w-4 h-4 text-violet-400 mr-2 shrink-0" />
+                  <input
+                    type="text"
+                    required
+                    value={authName}
+                    onChange={(e) => setAuthName(e.target.value)}
+                    placeholder="Contoh: Raka"
+                    className="w-full bg-transparent outline-none text-sm text-white placeholder-violet-500"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-semibold text-violet-300 mb-1.5">
+                Alamat Email
+              </label>
+              <div className="flex items-center bg-purple-950/50 border border-white/10 rounded-xl px-3 py-2.5">
+                <Mail className="w-4 h-4 text-violet-400 mr-2 shrink-0" />
+                <input
+                  type="email"
+                  required
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  placeholder="nama@email.com"
+                  className="w-full bg-transparent outline-none text-sm text-white placeholder-violet-500"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-violet-300 mb-1.5">
+                Password
+              </label>
+              <div className="flex items-center bg-purple-950/50 border border-white/10 rounded-xl px-3 py-2.5">
+                <Lock className="w-4 h-4 text-violet-400 mr-2 shrink-0" />
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full bg-transparent outline-none text-sm text-white placeholder-violet-500"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={authLoading}
+              className="w-full mt-2 bg-lime-400 hover:bg-lime-300 text-purple-950 font-black text-sm py-3 rounded-xl shadow-[0_4px_0_0_rgba(101,120,20,1)] active:translate-y-[2px] active:shadow-[0_1px_0_0_rgba(101,120,20,1)] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+            >
+              {authLoading ? (
+                "Memproses..."
+              ) : authMode === "login" ? (
+                <>
+                  <LogIn className="w-4 h-4" strokeWidth={3} />
+                  MASUK SEKARANG
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" strokeWidth={3} />
+                  BUAT AKUN BARU
+                </>
+              )}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
   }
 
   const overdueCount = tasks.filter(isOverdue).length;
@@ -292,6 +537,19 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
+            {/* User Info & Logout Pill */}
+            <div className="flex items-center gap-2 bg-purple-900/60 border border-white/10 rounded-full px-3 py-1.5 text-xs text-violet-200">
+              <User className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+              <span className="font-semibold max-w-[120px] truncate">{user.name}</span>
+              <button
+                onClick={handleLogout}
+                title="Keluar"
+                className="ml-1 text-violet-400 hover:text-rose-400 transition-colors p-1 cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
             <button
               onClick={enablePushNotifications}
               disabled={pushStatus === "subscribing"}
@@ -355,7 +613,7 @@ export default function App() {
                 <button
                   key={p}
                   onClick={() => setPriority(p)}
-                  className={`flex-1 min-w-[110px] flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border-2 transition-colors ${
+                  className={`flex-1 min-w-[110px] flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border-2 transition-colors cursor-pointer ${
                     active
                       ? `${meta.ring} ${meta.text} ${meta.dim}`
                       : "border-transparent bg-purple-950/50 text-violet-400"
@@ -379,7 +637,7 @@ export default function App() {
             </div>
             <button
               onClick={addTask}
-              className="flex items-center gap-1.5 bg-lime-400 text-purple-950 font-black text-xs px-5 py-2.5 rounded-xl shadow-[0_4px_0_0_rgba(101,120,20,1)] active:translate-y-[3px] active:shadow-[0_1px_0_0_rgba(101,120,20,1)] transition-all"
+              className="flex items-center gap-1.5 bg-lime-400 text-purple-950 font-black text-xs px-5 py-2.5 rounded-xl shadow-[0_4px_0_0_rgba(101,120,20,1)] active:translate-y-[3px] active:shadow-[0_1px_0_0_rgba(101,120,20,1)] transition-all cursor-pointer"
             >
               <Plus className="w-4 h-4" strokeWidth={3} />
               GASKEUN
@@ -419,7 +677,7 @@ export default function App() {
                       <button
                         onClick={() => toggleDone(t.id)}
                         aria-label="tandai selesai"
-                        className={`w-6 h-6 shrink-0 mt-0.5 rounded-full border-2 flex items-center justify-center ${
+                        className={`w-6 h-6 shrink-0 mt-0.5 rounded-full border-2 flex items-center justify-center cursor-pointer ${
                           meta.ring
                         } ${t.done ? meta.solid + " text-purple-950" : "text-transparent"}`}
                       >
@@ -443,7 +701,7 @@ export default function App() {
                       <button
                         onClick={() => deleteTask(t.id)}
                         aria-label="hapus tugas"
-                        className="text-violet-500 hover:text-rose-400 transition-colors shrink-0"
+                        className="text-violet-500 hover:text-rose-400 transition-colors shrink-0 cursor-pointer"
                       >
                         <X className="w-4 h-4" />
                       </button>
