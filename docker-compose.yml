@@ -1,0 +1,20 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./backend/tasks.json:/app/tasks.json
+    environment:
+      - PORT=3001
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - VITE_API_BASE=http://localhost:3001/api
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
