@@ -89,6 +89,73 @@ export default function App() {
   const [due, setDue] = useState("");
   const [priority, setPriority] = useState("genting");
   const [nagIndex, setNagIndex] = useState(0);
+  const [pushStatus, setPushStatus] = useState("default");
+  const [swRegistration, setSwRegistration] = useState(null);
+
+  useEffect(() => {
+    if ("serviceWorker" in navigator && "PushManager" in window) {
+      navigator.serviceWorker
+        .register("/sw.js")
+        .then((reg) => {
+          setSwRegistration(reg);
+          if (Notification.permission === "granted") {
+            setPushStatus("granted");
+          } else if (Notification.permission === "denied") {
+            setPushStatus("denied");
+          }
+        })
+        .catch((err) => console.error("SW Registration Error:", err));
+    }
+  }, []);
+
+  function urlBase64ToUint8Array(base64String) {
+    const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+  }
+
+  async function enablePushNotifications() {
+    if (!("Notification" in window) || !("serviceWorker" in navigator)) {
+      alert("Browser Anda belum mendukung Notifikasi Push.");
+      return;
+    }
+    try {
+      setPushStatus("subscribing");
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        setPushStatus("denied");
+        alert("Izin notifikasi ditolak. Silakan izinkan notifikasi di setelan browser HP Anda.");
+        return;
+      }
+
+      const reg = swRegistration || (await navigator.serviceWorker.ready);
+      const resKey = await fetch(`${API_BASE}/subscribe/key`);
+      const { publicKey } = await resKey.json();
+
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+
+      await fetch(`${API_BASE}/subscribe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sub),
+      });
+
+      await fetch(`${API_BASE}/subscribe/test`, { method: "POST" });
+      setPushStatus("granted");
+    } catch (e) {
+      console.error("Gagal mengaktifkan push:", e);
+      setPushStatus("default");
+      alert("Gagal mengaktifkan notifikasi: " + e.message);
+    }
+  }
 
   const fetchTasks = useCallback(async () => {
     try {
@@ -224,10 +291,29 @@ export default function App() {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 bg-purple-900/50 border border-white/10 rounded-full px-4 py-2 font-mono text-sm shadow-lg shadow-black/20">
-            <Flame className="w-4 h-4 text-lime-300" />
-            <span className="text-violet-300">streak beres:</span>
-            <b className="text-lime-300 text-base">{doneCount}</b>
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={enablePushNotifications}
+              disabled={pushStatus === "subscribing"}
+              className={`flex items-center gap-2 px-4 py-2 rounded-full font-medium text-xs shadow-lg transition-all border ${
+                pushStatus === "granted"
+                  ? "bg-lime-950/60 border-lime-400/50 text-lime-300 cursor-default"
+                  : pushStatus === "denied"
+                  ? "bg-rose-950/60 border-rose-400/50 text-rose-300 cursor-pointer"
+                  : "bg-gradient-to-r from-sky-500 to-indigo-500 hover:from-sky-400 hover:to-indigo-400 border-sky-300/40 text-white font-bold animate-pulse cursor-pointer"
+              }`}
+            >
+              <BellRing className="w-4 h-4" />
+              {pushStatus === "granted" && "Alarm HP Aktif 🔔"}
+              {pushStatus === "denied" && "Izin Notif Ditolak ❌"}
+              {pushStatus === "subscribing" && "Mengaktifkan..."}
+              {pushStatus === "default" && "Aktifkan Alarm HP 🔔"}
+            </button>
+            <div className="flex items-center gap-2 bg-purple-900/50 border border-white/10 rounded-full px-4 py-2 font-mono text-sm shadow-lg shadow-black/20">
+              <Flame className="w-4 h-4 text-lime-300" />
+              <span className="text-violet-300">streak beres:</span>
+              <b className="text-lime-300 text-base">{doneCount}</b>
+            </div>
           </div>
         </div>
 
